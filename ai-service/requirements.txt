@@ -1,0 +1,17 @@
+# Core service
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+httpx==0.27.2
+
+# RAG (Phase 4 ingestion, Phase 5 retrieval). CPU-only wheels — no GPU
+# required. First ingestion call downloads the ~90MB embedding model from
+# Hugging Face and caches it locally; needs internet once, not per-request.
+sentence-transformers==3.1.1
+faiss-cpu==1.8.0
+numpy==1.26.4
+
+# Testing (dev only — not needed to run the service)
+pytest==8.3.3

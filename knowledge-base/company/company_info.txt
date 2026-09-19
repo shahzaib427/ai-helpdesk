@@ -1,0 +1,27 @@
+NORTHWIND ELECTRONICS - COMPANY INFORMATION
+
+About us
+Northwind Electronics is an online retailer of audio, wearable and home
+technology. We were founded in 2016 and ship to 24 countries from warehouses in
+Rotterdam, Toronto and Singapore.
+
+Support hours
+Live chat with our AI assistant: 24 hours a day, every day.
+Human support agents: Monday to Friday, 08:00-20:00 UTC, and Saturday
+09:00-17:00 UTC. We are closed on Sundays and on public holidays in the
+Netherlands.
+
+Contact
+Email: support@northwind-demo.example
+Phone: +31 20 555 0140 (Monday to Friday, 09:00-17:00 UTC)
+Postal address: Keizersgracht 210, 1016 DX Amsterdam, Netherlands
+
+Response targets
+First reply to a ticket: within 4 working hours.
+Urgent tickets (payment errors, undelivered orders over 14 days old): within
+1 working hour.
+Resolution target: 2 working days for 90% of tickets.
+
+Languages
+We answer in English, Dutch, German and French. Other languages are handled by
+machine translation and may take longer.
