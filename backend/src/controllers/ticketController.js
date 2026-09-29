@@ -6,9 +6,10 @@ const ticketService = require("../services/ticketService");
 
 const list = asyncHandler(async (req, res) => {
   const isStaff = req.user.role === ROLES.AGENT || req.user.role === ROLES.ADMIN;
+  const query = { ...req.query, mine: req.query.mine === "true" }; // <-- fix here
   const { tickets, meta } = isStaff
-    ? await ticketService.listForStaff(req.user, req.query)
-    : await ticketService.listForCustomer(req.user, req.query);
+    ? await ticketService.listForStaff(req.user, query)
+    : await ticketService.listForCustomer(req.user, query);
   return sendSuccess(res, { message: "Tickets", data: { tickets }, meta });
 });
 

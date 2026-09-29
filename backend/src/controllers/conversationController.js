@@ -7,9 +7,10 @@ const conversationService = require("../services/conversationService");
 // Customers see only their own threads; agents/admins see the staff queue.
 const list = asyncHandler(async (req, res) => {
   const isStaff = req.user.role === ROLES.AGENT || req.user.role === ROLES.ADMIN;
+  const query = { ...req.query, mine: req.query.mine === "true" }; // <-- fix here
   const { conversations, meta } = isStaff
-    ? await conversationService.listForStaff(req.user, req.query)
-    : await conversationService.listForCustomer(req.user, req.query);
+    ? await conversationService.listForStaff(req.user, query)
+    : await conversationService.listForCustomer(req.user, query);
   return sendSuccess(res, { message: "Conversations", data: { conversations }, meta });
 });
 

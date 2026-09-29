@@ -61,13 +61,3 @@ def remove_document(document_id: int) -> int:
     removed = store.remove_by_document(document_id)
     logger.info("Removed document %s: %d chunks", document_id, removed)
     return removed
-
-
-def search(query: str, top_k: int | None = None):
-    """Embeds a query and returns the top matches. Not called by anything
-    yet in Phase 4 — Phase 5 wires this into the chat endpoint — but it
-    belongs next to ingest/remove since all three operate on the same store."""
-    settings = get_settings()
-    store = get_vector_store()
-    query_vector = embeddings_module.embed([query])[0]
-    return store.search(query_vector, top_k=top_k or settings.top_k)

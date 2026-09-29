@@ -4,6 +4,7 @@ import Button from "../../components/Button";
 import StatusPill from "../../components/StatusPill";
 import { ticketsApi } from "../../api/tickets";
 import { useAuth } from "../../context/AuthContext";
+import { getSocket } from "../../socket";
 
 const STATUSES = ["OPEN", "IN_PROGRESS", "WAITING_CUSTOMER", "RESOLVED", "CLOSED"];
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
@@ -122,6 +123,7 @@ export default function AgentTickets() {
   const [selected, setSelected] = useState(null);
   const [savingField, setSavingField] = useState(null);
   const [noteBusy, setNoteBusy] = useState(false);
+  const [unreadIds, setUnreadIds] = useState(() => new Set());
 
   const load = () => {
     setLoading(true);
@@ -142,6 +144,30 @@ export default function AgentTickets() {
     if (!selectedId) return;
     ticketsApi.get(selectedId).then(setSelected).catch((err) => setError(err.message));
   }, [selectedId]);
+
+  // Live queue: a new ticket lands, or another agent claims one visible here.
+  useEffect(() => {
+    const socket = getSocket();
+
+    const handleNewTicket = (ticket) => {
+      if (tab === "queue") {
+        setTickets((prev) => [ticket, ...prev.filter((t) => t.id !== ticket.id)]);
+        setUnreadIds((prev) => new Set(prev).add(String(ticket.id)));
+      }
+    };
+
+    const handleClaimed = ({ id }) => {
+      setTickets((prev) => prev.filter((t) => t.id !== id));
+    };
+
+    socket.on("ticket:new", handleNewTicket);
+    socket.on("ticket:claimed", handleClaimed);
+
+    return () => {
+      socket.off("ticket:new", handleNewTicket);
+      socket.off("ticket:claimed", handleClaimed);
+    };
+  }, [tab]);
 
   const refreshSelected = async () => {
     const updated = await ticketsApi.get(selectedId);
@@ -200,6 +226,16 @@ export default function AgentTickets() {
     }
   };
 
+  const openTicket = (id) => {
+    setSelectedId(id);
+    setUnreadIds((prev) => {
+      if (!prev.has(String(id))) return prev;
+      const next = new Set(prev);
+      next.delete(String(id));
+      return next;
+    });
+  };
+
   return (
     <div>
       <h1 className="font-display text-3xl">Tickets</h1>
@@ -248,35 +284,45 @@ export default function AgentTickets() {
           ) : tickets.length === 0 ? (
             <p className="p-5 text-slate-550">Nothing here right now.</p>
           ) : (
-            tickets.map((ticket) => (
-              <div
-                key={ticket.id}
-                className={`flex items-center justify-between gap-3 px-4 py-3 ${
-                  selectedId === ticket.id ? "bg-pine-light" : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(ticket.id)}
-                  className="min-w-0 flex-1 text-left"
+            tickets.map((ticket) => {
+              const isUnread = unreadIds.has(String(ticket.id));
+              return (
+                <div
+                  key={ticket.id}
+                  className={`flex items-center justify-between gap-3 px-4 py-3 ${
+                    selectedId === ticket.id ? "bg-pine-light" : ""
+                  }`}
                 >
-                  <p className="truncate text-sm font-medium">{ticket.subject}</p>
-                  <div className="mt-1.5 flex items-center gap-1.5">
-                    <StatusPill value={ticket.status} />
-                    <StatusPill value={ticket.priority} />
-                  </div>
-                </button>
-                {tab === "queue" && (
-                  <Button
-                    variant="secondary"
-                    className="shrink-0 px-2.5 py-1 text-xs"
-                    onClick={() => claimTicket(ticket.id)}
+                  <button
+                    type="button"
+                    onClick={() => openTicket(ticket.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                   >
-                    Claim
-                  </Button>
-                )}
-              </div>
-            ))
+                    {isUnread && (
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-pine" aria-label="Unread" />
+                    )}
+                    <div className="min-w-0">
+                      <p className={`truncate text-sm ${isUnread ? "font-semibold" : "font-medium"}`}>
+                        {ticket.subject}
+                      </p>
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        <StatusPill value={ticket.status} />
+                        <StatusPill value={ticket.priority} />
+                      </div>
+                    </div>
+                  </button>
+                  {tab === "queue" && (
+                    <Button
+                      variant="secondary"
+                      className="shrink-0 px-2.5 py-1 text-xs"
+                      onClick={() => claimTicket(ticket.id)}
+                    >
+                      Claim
+                    </Button>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
 

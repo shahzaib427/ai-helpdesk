@@ -4,6 +4,7 @@ import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import StatusPill from "../../components/StatusPill";
 import { conversationsApi } from "../../api/conversations";
+import { getSocket } from "../../socket";
 
 const CLOSED_STATUSES = ["RESOLVED", "CLOSED"];
 
@@ -60,7 +61,7 @@ function MessageBubble({ message }) {
   );
 }
 
-function Composer({ onSend, disabled, busy, placeholder }) {
+function Composer({ onSend, onChange, disabled, busy, placeholder }) {
   const [value, setValue] = useState("");
 
   const submit = (event) => {
@@ -69,6 +70,12 @@ function Composer({ onSend, disabled, busy, placeholder }) {
     if (!trimmed || disabled || busy) return;
     onSend(trimmed);
     setValue("");
+    onChange?.(false);
+  };
+
+  const handleChange = (e) => {
+    setValue(e.target.value);
+    onChange?.(e.target.value.trim().length > 0);
   };
 
   return (
@@ -77,7 +84,7 @@ function Composer({ onSend, disabled, busy, placeholder }) {
         rows={1}
         value={value}
         disabled={disabled}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={handleChange}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) submit(e);
         }}
@@ -99,7 +106,9 @@ export default function CustomerChat() {
   const [loading, setLoading] = useState(Boolean(conversationId));
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [typingLabel, setTypingLabel] = useState("");
   const bottomRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -121,6 +130,65 @@ export default function CustomerChat() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [conversationId, scrollToBottom]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    const socket = getSocket();
+    socket.emit("conversation:join", conversationId);
+
+    const handleNewMessage = (message) => {
+      if (String(message.conversationId) !== String(conversationId)) return;
+      setConversation((prev) => {
+        if (!prev) return prev;
+        if (prev.messages?.some((m) => m.id === message.id)) return prev;
+        return { ...prev, messages: [...(prev.messages || []), message] };
+      });
+      setTypingLabel("");
+      setTimeout(scrollToBottom, 50);
+    };
+
+    const handleStatusUpdate = ({ id, status }) => {
+      if (String(id) !== String(conversationId)) return;
+      setConversation((prev) => (prev ? { ...prev, status } : prev));
+    };
+
+    const handleTypingStart = ({ conversationId: cid, senderType }) => {
+      if (String(cid) !== String(conversationId)) return;
+      if (senderType !== "AGENT") return; // don't show the AI "typing", just human agents
+      setTypingLabel("Agent is typing…");
+    };
+
+    const handleTypingStop = ({ conversationId: cid }) => {
+      if (String(cid) !== String(conversationId)) return;
+      setTypingLabel("");
+    };
+
+    socket.on("message:new", handleNewMessage);
+    socket.on("conversation:update", handleStatusUpdate);
+    socket.on("typing:start", handleTypingStart);
+    socket.on("typing:stop", handleTypingStop);
+
+    return () => {
+      socket.emit("conversation:leave", conversationId);
+      socket.off("message:new", handleNewMessage);
+      socket.off("conversation:update", handleStatusUpdate);
+      socket.off("typing:start", handleTypingStart);
+      socket.off("typing:stop", handleTypingStop);
+    };
+  }, [conversationId, scrollToBottom]);
+
+  const handleComposerChange = (isTyping) => {
+    if (!conversationId) return;
+    const socket = getSocket();
+    clearTimeout(typingTimeoutRef.current);
+
+    if (isTyping) {
+      socket.emit("typing:start", conversationId);
+      typingTimeoutRef.current = setTimeout(() => socket.emit("typing:stop", conversationId), 2000);
+    } else {
+      socket.emit("typing:stop", conversationId);
+    }
+  };
 
   const handleStart = async (message) => {
     setSending(true);
@@ -169,7 +237,6 @@ export default function CustomerChat() {
   const canRequestHuman =
     conversation && !isClosed && !["WAITING_AGENT", "WITH_AGENT"].includes(conversation.status);
 
-  // No thread open yet: a plain composer that starts one.
   if (!conversationId) {
     return (
       <div className="mx-auto flex max-w-2xl flex-col">
@@ -236,6 +303,7 @@ export default function CustomerChat() {
               {conversation?.messages?.map((message) => (
                 <MessageBubble key={message.id} message={message} />
               ))}
+              {typingLabel && <p className="px-1 text-xs italic text-slate-550">{typingLabel}</p>}
               <div ref={bottomRef} />
             </>
           )}
@@ -250,7 +318,13 @@ export default function CustomerChat() {
             .
           </div>
         ) : (
-          <Composer onSend={handleSend} busy={sending} disabled={loading} placeholder="Type a message…" />
+          <Composer
+            onSend={handleSend}
+            onChange={handleComposerChange}
+            busy={sending}
+            disabled={loading}
+            placeholder="Type a message…"
+          />
         )}
       </div>
     </div>

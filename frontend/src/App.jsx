@@ -11,6 +11,7 @@ import NotFound from "./pages/NotFound";
 import CustomerChat from "./pages/customer/Chat";
 import CustomerConversations from "./pages/customer/Conversations";
 import CustomerTickets from "./pages/customer/Tickets";
+import CustomerDashboard from "./pages/customer/Dashboard"; 
 
 import AgentDashboard from "./pages/agent/Dashboard";
 import AgentTickets from "./pages/agent/Tickets";
@@ -46,13 +47,14 @@ export default function App() {
         </Route>
       </Route>
 
-      <Route element={<ProtectedRoute roles={["CUSTOMER"]} />}>
-        <Route element={<AppShell />}>
-          <Route path="/chat" element={<CustomerChat />} />
-          <Route path="/conversations" element={<CustomerConversations />} />
-          <Route path="/tickets" element={<CustomerTickets />} />
-        </Route>
-      </Route>
+<Route element={<ProtectedRoute roles={["CUSTOMER"]} />}>
+  <Route element={<AppShell />}>
+    <Route path="/dashboard" element={<CustomerDashboard />} /> {/* <-- add this route */}
+    <Route path="/chat" element={<CustomerChat />} />
+    <Route path="/conversations" element={<CustomerConversations />} />
+    <Route path="/tickets" element={<CustomerTickets />} />
+  </Route>
+</Route>
 
       <Route element={<ProtectedRoute roles={["AGENT", "ADMIN"]} />}>
         <Route element={<AppShell />}>

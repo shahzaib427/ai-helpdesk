@@ -5,6 +5,7 @@ import StatusPill from "../components/StatusPill";
 
 const NAV_BY_ROLE = {
   CUSTOMER: [
+    { to: "/dashboard", label: "Dashboard" }, // <-- add this
     { to: "/chat", label: "Get help" },
     { to: "/conversations", label: "Past chats" },
     { to: "/tickets", label: "My tickets" },

@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import Alert from "../../components/Alert";
 import Button from "../../components/Button";
 import StatusPill from "../../components/StatusPill";
+import CustomerContextPanel from "../../components/CustomerContextPanel";
 import { conversationsApi } from "../../api/conversations";
+import { getSocket } from "../../socket";
+import { useWaitTime } from "../../hooks/useWaitTime";
+import { requestNotificationPermission, notifyNewConversation } from "../../notifications";
 
 const SENDER_LABEL = { CUSTOMER: "Customer", AI: "AI Assistant", AGENT: "You", SYSTEM: "System" };
 
@@ -10,7 +14,13 @@ function formatTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function Thread({ conversation, onSend, sending }) {
+function WaitBadge({ lastMessageAt }) {
+  const label = useWaitTime(lastMessageAt);
+  if (!label) return null;
+  return <span className="text-xs text-slate-550">{label}</span>;
+}
+
+function Thread({ conversation, onSend, sending, typingLabel, onComposerChange }) {
   const [value, setValue] = useState("");
   const bottomRef = useRef(null);
 
@@ -26,6 +36,12 @@ function Thread({ conversation, onSend, sending }) {
     if (!trimmed || sending) return;
     onSend(trimmed);
     setValue("");
+    onComposerChange?.(false);
+  };
+
+  const handleChange = (e) => {
+    setValue(e.target.value);
+    onComposerChange?.(e.target.value.trim().length > 0);
   };
 
   if (!conversation) {
@@ -69,6 +85,7 @@ function Thread({ conversation, onSend, sending }) {
             </div>
           )
         )}
+        {typingLabel && <p className="px-1 text-xs italic text-slate-550">{typingLabel}</p>}
         <div ref={bottomRef} />
       </div>
 
@@ -77,7 +94,7 @@ function Thread({ conversation, onSend, sending }) {
           <textarea
             rows={1}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={handleChange}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) submit(e);
             }}
@@ -106,6 +123,9 @@ export default function AgentConversations() {
   const [selected, setSelected] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [sending, setSending] = useState(false);
+  const [typingLabel, setTypingLabel] = useState("");
+  const typingTimeoutRef = useRef(null);
+  const skipNextResetRef = useRef(false); // <-- new: guards against wiping a just-made selection
 
   const load = () => {
     setLoading(true);
@@ -119,8 +139,14 @@ export default function AgentConversations() {
 
   useEffect(() => {
     load();
-    setSelectedId(null);
-    setSelected(null);
+    if (skipNextResetRef.current) {
+      // This tab change came from handleTakeOver, which already set the
+      // correct selection — don't clobber it.
+      skipNextResetRef.current = false;
+    } else {
+      setSelectedId(null);
+      setSelected(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -129,11 +155,86 @@ export default function AgentConversations() {
     conversationsApi.get(selectedId).then(setSelected).catch((err) => setError(err.message));
   }, [selectedId]);
 
+  useEffect(() => {
+    requestNotificationPermission();
+  }, []);
+
+  useEffect(() => {
+    const socket = getSocket();
+
+    const handleNewInQueue = (summary) => {
+      notifyNewConversation(summary.subject);
+      if (tab === "queue") {
+        setConversations((prev) => [summary, ...prev.filter((c) => c.id !== summary.id)]);
+      }
+    };
+
+    const handleClaimed = ({ id }) => {
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+    };
+
+    const handleNewMessage = (message) => {
+      setSelected((prev) => {
+        if (!prev || prev.id !== message.conversationId) return prev;
+        return { ...prev, messages: [...(prev.messages || []), message] };
+      });
+      setTypingLabel("");
+    };
+
+    const handleTypingStart = ({ conversationId, senderType, name }) => {
+      if (!selectedId || String(conversationId) !== String(selectedId)) return;
+      if (senderType !== "CUSTOMER") return;
+      setTypingLabel(`${name || "Customer"} is typing…`);
+    };
+
+    const handleTypingStop = ({ conversationId }) => {
+      if (!selectedId || String(conversationId) !== String(selectedId)) return;
+      setTypingLabel("");
+    };
+
+    socket.on("queue:new", handleNewInQueue);
+    socket.on("queue:claimed", handleClaimed);
+    socket.on("message:new", handleNewMessage);
+    socket.on("typing:start", handleTypingStart);
+    socket.on("typing:stop", handleTypingStop);
+
+    return () => {
+      socket.off("queue:new", handleNewInQueue);
+      socket.off("queue:claimed", handleClaimed);
+      socket.off("message:new", handleNewMessage);
+      socket.off("typing:start", handleTypingStart);
+      socket.off("typing:stop", handleTypingStop);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const socket = getSocket();
+    socket.emit("conversation:join", selectedId);
+    setTypingLabel("");
+    return () => socket.emit("conversation:leave", selectedId);
+  }, [selectedId]);
+
+  const handleComposerChange = (isTyping) => {
+    if (!selectedId) return;
+    const socket = getSocket();
+    clearTimeout(typingTimeoutRef.current);
+
+    if (isTyping) {
+      socket.emit("typing:start", selectedId);
+      typingTimeoutRef.current = setTimeout(() => socket.emit("typing:stop", selectedId), 2000);
+    } else {
+      socket.emit("typing:stop", selectedId);
+    }
+  };
+
   const handleTakeOver = async (id) => {
     setBusyId(id);
     setError("");
     try {
       const updated = await conversationsApi.takeOver(id);
+      skipNextResetRef.current = true; // tell the [tab] effect not to reset selection
       setSelectedId(updated.id);
       setSelected(updated);
       setTab("mine");
@@ -145,6 +246,7 @@ export default function AgentConversations() {
   };
 
   const handleReply = async (content) => {
+    if (!selectedId) return; // extra guard: never fire with a null id
     setSending(true);
     setError("");
     try {
@@ -186,7 +288,7 @@ export default function AgentConversations() {
         </div>
       )}
 
-      <div className="mt-5 grid gap-4 lg:h-[65vh] lg:grid-cols-[320px_1fr]">
+      <div className="mt-5 grid gap-4 lg:h-[65vh] lg:grid-cols-[320px_1fr_300px]">
         <div className="panel divide-y divide-ink/8 overflow-y-auto">
           {loading ? (
             <p className="p-5 text-slate-550">Loading…</p>
@@ -202,13 +304,12 @@ export default function AgentConversations() {
                   selectedId === c.id ? "bg-pine-light" : ""
                 }`}
               >
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(c.id)}
-                  className="min-w-0 flex-1 text-left"
-                >
+                <button type="button" onClick={() => setSelectedId(c.id)} className="min-w-0 flex-1 text-left">
                   <p className="truncate text-sm font-medium">{c.subject || "Conversation"}</p>
-                  <p className="mt-0.5 truncate text-xs text-slate-550">{c.customerName || "Customer"}</p>
+                  <div className="mt-0.5 flex items-center gap-2">
+                    <p className="truncate text-xs text-slate-550">{c.customerName || "Customer"}</p>
+                    {c.status === "WAITING_AGENT" && <WaitBadge lastMessageAt={c.lastMessageAt} />}
+                  </div>
                 </button>
                 {c.status === "WAITING_AGENT" && (
                   <Button
@@ -225,7 +326,15 @@ export default function AgentConversations() {
           )}
         </div>
 
-        <Thread conversation={selected} onSend={handleReply} sending={sending} />
+        <Thread
+          conversation={selected}
+          onSend={handleReply}
+          sending={sending}
+          typingLabel={typingLabel}
+          onComposerChange={handleComposerChange}
+        />
+
+        <CustomerContextPanel customerId={selected?.customerId} />
       </div>
     </div>
   );

@@ -4,9 +4,6 @@ const ApiError = require("../utils/ApiError");
 const logger = require("../utils/logger");
 const config = require("../config/env");
 
-// Last middleware in the chain. Converts anything thrown into the standard
-// error envelope: { success: false, message, details }
-// eslint-disable-next-line no-unused-vars
 module.exports = (err, req, res, next) => {
   let error = err;
 
@@ -20,7 +17,11 @@ module.exports = (err, req, res, next) => {
       err.errors.map((e) => ({ field: e.path, message: e.message }))
     );
   } else if (!(err instanceof ApiError)) {
-    logger.error(err.stack || err.message);
+    // Sequelize wraps the real driver error in .original/.parent — log that
+    // too, or every DB failure just prints the word "Error" with nothing
+    // useful to debug from.
+    logger.error(err.original?.message || err.parent?.message || err.message || "Unknown error");
+    logger.error(err.stack);
     error = ApiError.internal();
   }
 

@@ -9,6 +9,8 @@ const productRoutes = require("./products.routes");
 const orderRoutes = require("./orders.routes");
 const customerRoutes = require("./customers.routes");
 const knowledgeRoutes = require("./knowledge.routes");
+const internalRoutes = require("./internal.routes");
+const analyticsRoutes = require("./analytics.routes");
 
 const router = express.Router();
 
@@ -30,8 +32,7 @@ router.use("/products", productRoutes);
 router.use("/orders", orderRoutes);
 router.use("/customers", customerRoutes);
 router.use("/knowledge", knowledgeRoutes);
-
-// Phase 8 mount point, added when that phase lands:
-// router.use("/analytics", analyticsRoutes);
+router.use("/internal", internalRoutes);
+router.use("/analytics", analyticsRoutes);
 
 module.exports = router;

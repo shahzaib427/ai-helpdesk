@@ -4,7 +4,7 @@ const dotenv = require("dotenv");
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
-const required = ["JWT_SECRET", "DB_DATABASE", "DB_USER"];
+const required = ["JWT_SECRET", "DB_DATABASE", "DB_USER", "INTERNAL_API_KEY"];
 const missing = required.filter((key) => !process.env[key]);
 if (missing.length) {
   throw new Error(
@@ -34,4 +34,9 @@ module.exports = {
   },
   bcryptRounds: Number(process.env.BCRYPT_SALT_ROUNDS || 10),
   aiServiceUrl: process.env.AI_SERVICE_URL || "http://localhost:5001",
+  // Shared secret the AI service presents to reach /api/internal/*. The AI
+  // service is never a logged-in user, so it can't carry a JWT — this is
+  // the only other door into protected data, and it opens onto a
+  // deliberately narrow, tool-shaped set of endpoints, not the full API.
+  internalApiKey: process.env.INTERNAL_API_KEY,
 };

@@ -17,6 +17,12 @@ module.exports = (sequelize) => {
       },
       aiEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       lastMessageAt: { type: DataTypes.DATE, allowNull: true },
+      // Null means a customer explicitly clicked "Ask for a human" (Phase 2's
+      // door, with no AI-determined reason). Any other value is one of
+      // support_agent.py's router outcomes — the dashboard uses this to tell
+      // "AI escalated this" apart from "customer asked directly" without
+      // guessing from timing alone.
+      handoffReason: { type: DataTypes.STRING(40), allowNull: true },
     },
     {
       tableName: "conversations",

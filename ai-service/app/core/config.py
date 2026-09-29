@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     relevance_threshold: float = 0.35
 
     backend_url: str = "http://localhost:5000"
+    # Must match INTERNAL_API_KEY in backend/.env — this is how the AI
+    # service authenticates to the Node backend's tool-facing endpoints,
+    # since it has no user login of its own.
+    internal_api_key: str = ""
+    tool_timeout_seconds: int = 15
 
     @property
     def cors_origins(self) -> list[str]:

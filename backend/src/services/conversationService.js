@@ -4,6 +4,7 @@ const { ROLES, CONVERSATION_STATUS, SENDER_TYPE, MESSAGE_TYPE } = require("../co
 const ApiError = require("../utils/ApiError");
 const aiClient = require("./aiClient");
 const logger = require("../utils/logger");
+const { getIO, conversationRoom } = require("../socket");
 
 const FALLBACK_REPLY =
   "AI support is temporarily unavailable. Your message has been saved and a support ticket can be created.";
@@ -20,9 +21,6 @@ async function getAgentProfile(user) {
   return profile;
 }
 
-// Loads a conversation and checks the requester is allowed to see it.
-// Customers only see their own; agents and admins see any (an agent needs to
-// see an unassigned conversation in order to take it over).
 async function loadConversation(id, user, { withMessages = false } = {}) {
   const conversation = await Conversation.findByPk(id, {
     include: withMessages ? [{ model: Message, as: "messages", order: [["createdAt", "ASC"]] }] : [],
@@ -41,6 +39,7 @@ async function loadConversation(id, user, { withMessages = false } = {}) {
   return conversation;
 }
 
+
 function toSummary(conversation) {
   return {
     id: conversation.id,
@@ -48,6 +47,7 @@ function toSummary(conversation) {
     status: conversation.status,
     aiEnabled: conversation.aiEnabled,
     assignedAgentId: conversation.assignedAgentId,
+    handoffReason: conversation.handoffReason, // <-- add this line
     lastMessageAt: conversation.lastMessageAt,
     createdAt: conversation.createdAt,
   };
@@ -67,8 +67,6 @@ async function listForCustomer(user, { page = 1, limit = 20 }) {
   };
 }
 
-// Agents see conversations waiting for a human plus their own assigned ones
-// unless `mine=true`, which narrows to just their own. Admins see everything.
 async function listForStaff(user, { page = 1, limit = 20, status, mine }) {
   const where = {};
   if (status) where.status = status;
@@ -91,6 +89,7 @@ async function listForStaff(user, { page = 1, limit = 20, status, mine }) {
   return {
     conversations: rows.map((c) => ({
       ...toSummary(c),
+      customerId: c.customerId,
       customerName: c.customer?.user ? `${c.customer.user.firstName} ${c.customer.user.lastName}` : null,
     })),
     meta: { page, limit, total: count, totalPages: Math.ceil(count / limit) || 1 },
@@ -102,8 +101,6 @@ async function getDetail(id, user) {
   return conversation;
 }
 
-// Fire-and-record: ask the AI service for a reply, save it, log the attempt.
-// Any failure becomes a SYSTEM fallback message rather than a broken chat.
 async function requestAiReply(conversation, recentMessages) {
   const history = recentMessages
     .filter((m) => m.senderType === SENDER_TYPE.CUSTOMER || m.senderType === SENDER_TYPE.AI)
@@ -120,30 +117,47 @@ async function requestAiReply(conversation, recentMessages) {
       history: history.slice(0, -1),
     });
 
-    await Message.create({
+    const aiMessage = await Message.create({
       conversationId: conversation.id,
       senderType: SENDER_TYPE.AI,
       content: result.reply,
       messageType: MESSAGE_TYPE.TEXT,
-      metadata: { provider: result.provider, model: result.model, sources: result.sources || [] },
+      metadata: {
+        provider: result.provider,
+        model: result.model,
+        sources: result.sources || [],
+        intent: result.intent,
+        toolUsed: result.tool_used || null,
+        sentiment: result.sentiment || null,
+      },
     });
+
+    getIO().to(conversationRoom(conversation.id)).emit("message:new", aiMessage.toJSON());
 
     await AiLog.create({
       conversationId: conversation.id,
       provider: result.provider,
       model: result.model,
       intent: result.intent,
+      toolUsed: result.tool_used || null,
+      sentiment: result.sentiment || null,
+      handoffReason: result.handoff_reason || null,
       latencyMs: result.latency_ms,
       retrievedChunks: (result.sources || []).length,
       success: true,
     });
+
+    if (result.handoff_required) {
+      await transitionToHuman(conversation, result.handoff_reason || null);
+    }
   } catch (err) {
-    await Message.create({
+    const fallbackMessage = await Message.create({
       conversationId: conversation.id,
       senderType: SENDER_TYPE.SYSTEM,
       content: FALLBACK_REPLY,
       messageType: MESSAGE_TYPE.TEXT,
     });
+    getIO().to(conversationRoom(conversation.id)).emit("message:new", fallbackMessage.toJSON());
     await AiLog.create({ conversationId: conversation.id, success: false, error: err.message });
   }
 
@@ -151,9 +165,6 @@ async function requestAiReply(conversation, recentMessages) {
   await conversation.save();
 }
 
-// Creates the conversation and its opening message in one transaction, then
-// (outside the transaction, so a slow AI call doesn't hold a DB lock) asks
-// the AI for the first reply.
 async function startConversation(user, { subject, message }) {
   const profile = await getCustomerProfile(user);
 
@@ -173,9 +184,6 @@ async function startConversation(user, { subject, message }) {
   return loadConversation(conversation.id, user, { withMessages: true });
 }
 
-// Adds a message to an existing thread. A customer message triggers an AI
-// reply only while the AI is still handling the conversation; once an agent
-// has taken it over, customer messages just wait for that agent.
 async function addMessage(id, user, { content }) {
   const conversation = await loadConversation(id, user);
 
@@ -193,7 +201,9 @@ async function addMessage(id, user, { content }) {
     }
   }
 
-  await Message.create({ conversationId: conversation.id, senderId: user.id, senderType, content });
+  const message = await Message.create({ conversationId: conversation.id, senderId: user.id, senderType, content });
+  getIO().to(conversationRoom(conversation.id)).emit("message:new", message.toJSON());
+
   conversation.lastMessageAt = new Date();
   await conversation.save();
 
@@ -209,40 +219,101 @@ async function addMessage(id, user, { content }) {
   return loadConversation(conversation.id, user, { withMessages: true });
 }
 
-// The customer asks to speak to a person. Turns the AI off for this thread,
-// puts it in the queue agents watch, and opens a ticket if one doesn't
-// already exist for this conversation, so the request shows up in both
-// places an agent might look.
-async function requestHandoff(id, user) {
-  const conversation = await loadConversation(id, user, { withMessages: true });
+const PRIORITY_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, URGENT: 3 };
+function priorityRank(priority) {
+  return PRIORITY_RANK[priority] ?? 0;
+}
+
+const HANDOFF_REASONS = {
+  explicit_request: {
+    message: "You've been moved to the human support queue. An agent will join shortly.",
+    priority: "MEDIUM",
+    category: "general",
+  },
+  no_confident_answer: {
+    message:
+      "I wasn't able to find a confident answer to your question, so I've looped in a human agent who can help further.",
+    priority: "MEDIUM",
+    category: "general",
+  },
+  sensitive_refund: {
+    message:
+      "This may involve an incorrect or duplicate charge, so I've flagged it as urgent and looped in a human agent right away.",
+    priority: "URGENT",
+    category: "billing",
+  },
+  customer_frustration: {
+    message: "I can see this hasn't gone smoothly, so I've brought in a human agent to help sort it out.",
+    priority: "HIGH",
+    category: "general",
+  },
+  tool_failure: {
+    message: "I ran into a system issue trying to look that up, so I've brought in a human agent to help directly.",
+    priority: "HIGH",
+    category: "technical",
+  },
+};
+const DEFAULT_HANDOFF = HANDOFF_REASONS.explicit_request;
+
+async function transitionToHuman(conversation, reason = null) {
+  if (conversation.status === CONVERSATION_STATUS.WAITING_AGENT || conversation.status === CONVERSATION_STATUS.WITH_AGENT) {
+    return;
+  }
+
+  const { message: handoffMessage, priority, category } = HANDOFF_REASONS[reason] || DEFAULT_HANDOFF;
+
   conversation.status = CONVERSATION_STATUS.WAITING_AGENT;
   conversation.aiEnabled = false;
+  conversation.handoffReason = reason;
   await conversation.save();
 
-  await Message.create({
+  const systemMessage = await Message.create({
     conversationId: conversation.id,
     senderType: SENDER_TYPE.SYSTEM,
-    content: "You've been moved to the human support queue. An agent will join shortly.",
+    content: handoffMessage,
     messageType: MESSAGE_TYPE.HANDOFF,
+    metadata: reason ? { handoffReason: reason } : null,
+  });
+  getIO().to(conversationRoom(conversation.id)).emit("message:new", systemMessage.toJSON());
+
+  // Tell every agent watching the queue that a new conversation just landed,
+  // so it appears in their list without a manual reload.
+  getIO().to("staff").emit("queue:new", {
+    id: conversation.id,
+    subject: conversation.subject,
+    status: conversation.status,
+    lastMessageAt: conversation.lastMessageAt,
   });
 
   const existingTicket = await Ticket.findOne({ where: { conversationId: conversation.id } });
   if (!existingTicket) {
-    const firstCustomerMessage = conversation.messages?.find((m) => m.senderType === SENDER_TYPE.CUSTOMER);
+    const recent = await Message.findAll({
+      where: { conversationId: conversation.id },
+      order: [["createdAt", "ASC"]],
+      limit: 20,
+    });
+    const firstCustomerMessage = recent.find((m) => m.senderType === SENDER_TYPE.CUSTOMER);
     await Ticket.create({
       customerId: conversation.customerId,
       conversationId: conversation.id,
       subject: conversation.subject || "Support request",
       description: firstCustomerMessage?.content || "Customer requested a human agent.",
-      category: "general",
-      createdByAi: false,
+      category,
+      priority,
+      createdByAi: reason !== null,
     });
+  } else if (HANDOFF_REASONS[reason] && priorityRank(priority) > priorityRank(existingTicket.priority)) {
+    existingTicket.priority = priority;
+    await existingTicket.save();
   }
+}
 
+async function requestHandoff(id, user) {
+  const conversation = await loadConversation(id, user, { withMessages: true });
+  await transitionToHuman(conversation);
   return loadConversation(conversation.id, user, { withMessages: true });
 }
 
-// An agent (or admin, acting as one) claims a conversation.
 async function takeOver(id, user) {
   const agentProfile = user.role === ROLES.AGENT ? await getAgentProfile(user) : null;
   const conversation = await Conversation.findByPk(id);
@@ -253,11 +324,15 @@ async function takeOver(id, user) {
   conversation.status = CONVERSATION_STATUS.WITH_AGENT;
   await conversation.save();
 
-  await Message.create({
+  const joinMessage = await Message.create({
     conversationId: conversation.id,
     senderType: SENDER_TYPE.SYSTEM,
     content: `${user.firstName} has joined the conversation.`,
   });
+  getIO().to(conversationRoom(conversation.id)).emit("message:new", joinMessage.toJSON());
+
+  // Removes it from every other agent's "Waiting" list immediately.
+  getIO().to("staff").emit("queue:claimed", { id: conversation.id });
 
   return loadConversation(conversation.id, user, { withMessages: true });
 }
@@ -271,6 +346,9 @@ async function updateStatus(id, user, { status }) {
     conversation.aiEnabled = false;
   }
   await conversation.save();
+
+  getIO().to(conversationRoom(conversation.id)).emit("conversation:update", { id: conversation.id, status });
+
   return loadConversation(conversation.id, user, { withMessages: true });
 }
 

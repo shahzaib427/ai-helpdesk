@@ -130,4 +130,37 @@ async function update(id, updates) {
   return order;
 }
 
-module.exports = { list, getById, getByOrderNumber, create, update };
+// ---- Internal/tool-calling variants ----
+// The AI service has no logged-in user, only a customerId it was told by
+// Node (the customer whose conversation this is). These functions take that
+// customerId directly rather than a user object, and enforce the same
+// ownership check inline rather than through getCustomerProfile — a rogue
+// prompt asking about a different customer's order number is refused the
+// same way a browser request would be, just via a different parameter shape.
+
+async function getByOrderNumberForCustomer(orderNumber, customerId) {
+  const order = await Order.findOne({
+    where: { orderNumber: String(orderNumber) },
+    include: [{ model: OrderItem, as: "items", include: ["product"] }],
+  });
+  if (!order || order.customerId !== customerId) return null;
+  return order;
+}
+
+async function listForCustomerId(customerId, limit = 5) {
+  return Order.findAll({
+    where: { customerId },
+    order: [["placedAt", "DESC"]],
+    limit,
+  });
+}
+
+module.exports = {
+  list,
+  getById,
+  getByOrderNumber,
+  create,
+  update,
+  getByOrderNumberForCustomer,
+  listForCustomerId,
+};

@@ -3,6 +3,7 @@ const { Op } = require("sequelize");
 const { sequelize, Ticket, Customer, Agent, Conversation } = require("../models");
 const { ROLES, TICKET_STATUS } = require("../config/constants");
 const ApiError = require("../utils/ApiError");
+const { getIO } = require("../socket");
 
 async function getCustomerProfile(user) {
   const profile = await Customer.findOne({ where: { userId: user.id } });
@@ -137,6 +138,8 @@ async function create(user, { subject, description, category, priority, conversa
     category: category || "general",
     priority: priority || "MEDIUM",
   });
+  
+getIO().to("staff").emit("ticket:new", toSummary(ticket));
 
   return forCustomer(ticket);
 }
@@ -169,6 +172,9 @@ async function assign(id, user, { assignedAgentId }) {
   }
   ticket.assignedAgentId = assignedAgentId;
   await ticket.save();
+    if (assignedAgentId) {
+    getIO().to("staff").emit("ticket:claimed", { id: ticket.id }); // <-- add this line
+  }
   return ticket;
 }
 
@@ -189,6 +195,30 @@ async function addInternalNote(id, user, { content }) {
   return ticket;
 }
 
+// ---- Internal/tool-calling variants ----
+// Same reasoning as orderService's: the AI service supplies a customerId
+// rather than a logged-in user, so these take that directly and enforce
+// ownership inline.
+
+async function createForCustomerId(customerId, { subject, description, category, conversationId }) {
+  const ticket = await Ticket.create({
+    customerId,
+    conversationId: conversationId || null,
+    subject,
+    description,
+    category: category || "general",
+    priority: "MEDIUM",
+    createdByAi: true,
+  });
+  return forCustomer(ticket);
+}
+
+async function getForCustomerId(id, customerId) {
+  const ticket = await Ticket.findByPk(id);
+  if (!ticket || ticket.customerId !== customerId) return null;
+  return forCustomer(ticket);
+}
+
 module.exports = {
   listForCustomer,
   listForStaff,
@@ -199,4 +229,6 @@ module.exports = {
   updatePriority,
   assign,
   addInternalNote,
+  createForCustomerId,
+  getForCustomerId,
 };

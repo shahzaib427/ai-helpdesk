@@ -62,5 +62,5 @@ export function useAuth() {
 export const HOME_BY_ROLE = {
   ADMIN: "/admin/dashboard",
   AGENT: "/agent/dashboard",
-  CUSTOMER: "/chat",
+  CUSTOMER: "/dashboard", // was "/chat"
 };
